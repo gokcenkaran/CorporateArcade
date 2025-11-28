@@ -1,73 +1,174 @@
-import { Canvas } from "@react-three/fiber";
-import { Suspense, useEffect, useState } from "react";
-import { KeyboardControls } from "@react-three/drei";
-// import { useAudio } from "./lib/stores/useAudio";
+import { useEffect, useRef, useCallback } from "react";
+import { MCPCallee } from "@/lib/mcp/MCPCallee";
+import { useRiverRaid } from "@/lib/stores/useRiverRaid";
+import { RiverRaidGame } from "@/components/game/RiverRaidGame";
+import { GameUI } from "@/components/game/GameUI";
 import "@fontsource/inter";
 
-// Import our game components
-
-// Define control keys for the game
-// const controls = [
-//   { name: "forward", keys: ["KeyW", "ArrowUp"] },
-//   { name: "backward", keys: ["KeyS", "ArrowDown"] },
-//   { name: "leftward", keys: ["KeyA", "ArrowLeft"] },
-//   { name: "rightward", keys: ["KeyD", "ArrowRight"] },
-//   { name: "punch", keys: ["KeyJ"] },
-//   { name: "kick", keys: ["KeyK"] },
-//   { name: "block", keys: ["KeyL"] },
-//   { name: "special", keys: ["Space"] },
-// ];
-
-// Main App component
 function App() {
-  //const { gamePhase } = useFighting();
-  const [showCanvas, setShowCanvas] = useState(false);
+  const mcpRef = useRef<MCPCallee | null>(null);
+  const { 
+    setUsername, 
+    phase, 
+    score, 
+    lives, 
+    fuel,
+    startGame,
+    restartGame,
+    pauseGame,
+    resumeGame 
+  } = useRiverRaid();
+  
+  const prevPhaseRef = useRef<string>(phase);
+  const prevLivesRef = useRef<number>(lives);
 
-  // Show the canvas once everything is loaded
+  // Handle control commands from parent
+  const handleControl = useCallback((action: string, params: any) => {
+    console.log("MCP Control:", action, params);
+    
+    switch (action) {
+      case "play":
+      case "start":
+        if (phase === "menu" || phase === "gameover") {
+          if (phase === "gameover") {
+            restartGame();
+          }
+          startGame();
+        } else if (phase === "paused") {
+          resumeGame();
+        }
+        break;
+      case "pause":
+        if (phase === "playing") {
+          pauseGame();
+        }
+        break;
+      case "resume":
+        if (phase === "paused") {
+          resumeGame();
+        }
+        break;
+      case "restart":
+        restartGame();
+        break;
+    }
+  }, [phase, startGame, restartGame, pauseGame, resumeGame]);
+
   useEffect(() => {
-    setShowCanvas(true);
-  }, []);
+    // Initialize MCP Callee for layer mode integration
+    mcpRef.current = new MCPCallee({
+      appId: "river-raid-game",
+      version: "1.0.0",
+      capabilities: ["play", "pause", "restart", "resume"],
+      debug: true,
+    });
+
+    // Handle init from parent app or URL params
+    mcpRef.current.onInit((context) => {
+      console.log("MCP Init received:", context);
+      
+      // Set username from params
+      if (context.params.username) {
+        setUsername(context.params.username);
+      } else if (context.userId) {
+        setUsername(context.userId);
+      }
+      
+      // Notify parent that game is ready
+      mcpRef.current?.sendProgress({
+        current: 0,
+        total: 100,
+        message: "Game ready to start",
+      });
+    });
+
+    // Handle control commands from parent
+    mcpRef.current.onControl(handleControl);
+
+    // Handle close request from parent
+    mcpRef.current.onClose((reason) => {
+      console.log("MCP Close:", reason);
+      // Send final state when closing
+      const state = useRiverRaid.getState();
+      mcpRef.current?.cancelWithData(reason, {
+        finalScore: state.score,
+        lives: state.lives,
+        fuel: state.fuel,
+        phase: state.phase,
+      });
+    });
+
+    return () => {
+      mcpRef.current?.destroy();
+    };
+  }, [setUsername, handleControl]);
+
+  // Send progress updates when score, lives, or fuel changes during gameplay
+  useEffect(() => {
+    if (mcpRef.current && phase === "playing") {
+      mcpRef.current.sendGameProgress({
+        score,
+        lives,
+        status: "playing",
+      });
+      
+      // Also send generic progress
+      mcpRef.current.sendProgress({
+        current: score,
+        total: score + 1000, // Approximate progress
+        message: `Score: ${score} | Lives: ${lives} | Fuel: ${Math.round(fuel)}%`,
+      });
+    }
+  }, [phase, score, lives, fuel]);
+
+  // Detect life loss and notify parent
+  useEffect(() => {
+    if (phase === "playing" && lives < prevLivesRef.current) {
+      console.log(`Life lost! Remaining lives: ${lives}`);
+      if (mcpRef.current) {
+        mcpRef.current.sendProgress({
+          current: lives,
+          total: 3,
+          message: `Life lost! Remaining: ${lives}`,
+        });
+      }
+    }
+    prevLivesRef.current = lives;
+  }, [lives, phase]);
+
+  // Detect phase changes and notify parent
+  useEffect(() => {
+    if (mcpRef.current) {
+      if (phase === "playing" && prevPhaseRef.current !== "playing") {
+        // Game started
+        mcpRef.current.sendGameProgress({
+          score: 0,
+          lives: 3,
+          status: "playing",
+        });
+      } else if (phase === "paused" && prevPhaseRef.current === "playing") {
+        // Game paused
+        mcpRef.current.sendGameProgress({
+          score,
+          lives,
+          status: "paused",
+        });
+      } else if (phase === "gameover" && prevPhaseRef.current !== "gameover") {
+        // Game over - send completion
+        mcpRef.current.completeGame({
+          finalScore: score,
+          completed: true,
+        });
+      }
+    }
+    prevPhaseRef.current = phase;
+  }, [phase, score, lives]);
 
   return (
-    <div style={{ width: '100vw', height: '100vh', position: 'relative', overflow: 'hidden' }}/>
-    // {showCanvas && (
-    //   <KeyboardControls map={controls}>
-    //     {gamePhase === 'menu' && <Menu />}
-
-    //     {gamePhase === 'character_selection' && <CharacterSelection />}
-
-    //     {(gamePhase === 'fighting' || gamePhase === 'round_end' || gamePhase === 'match_end') && (
-    //       <>
-    //         <Canvas
-    //           shadows
-    //           camera={{
-    //             position: [0, 2, 8],
-    //             fov: 45,
-    //             near: 0.1,
-    //             far: 1000
-    //           }}
-    //           gl={{
-    //             antialias: true,
-    //             powerPreference: "default"
-    //           }}
-    //         >
-    //           <color attach="background" args={["#111111"]} />
-
-    //           {/* Lighting */}
-    //           <Lights />
-
-    //           <Suspense fallback={null}>
-    //           </Suspense>
-    //         </Canvas>
-    //         <GameUI />
-    //       </>
-    //     )}
-
-    //     <ShortcutManager />
-    //     <SoundManager />
-    //   </KeyboardControls>
-    // )}
-    //</div>
+    <div className="game-container">
+      <RiverRaidGame />
+      <GameUI />
+    </div>
   );
 }
 
