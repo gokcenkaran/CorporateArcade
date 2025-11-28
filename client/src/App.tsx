@@ -13,10 +13,13 @@ function App() {
     score, 
     lives, 
     fuel,
+    highScore,
+    difficulty,
     startGame,
     restartGame,
     pauseGame,
-    resumeGame 
+    resumeGame,
+    setHighScore,
   } = useRiverRaid();
   
   const prevPhaseRef = useRef<string>(phase);
@@ -154,15 +157,29 @@ function App() {
           status: "paused",
         });
       } else if (phase === "gameover" && prevPhaseRef.current !== "gameover") {
-        // Game over - send completion
+        // Game over - send completion with high score
+        const state = useRiverRaid.getState();
         mcpRef.current.completeGame({
           finalScore: score,
+          highScore: state.highScore,
+          difficulty: state.difficulty,
           completed: true,
         });
       }
     }
     prevPhaseRef.current = phase;
   }, [phase, score, lives]);
+
+  // Send high score updates to parent app
+  useEffect(() => {
+    if (mcpRef.current && highScore > 0) {
+      mcpRef.current.sendProgress({
+        current: highScore,
+        total: highScore,
+        message: `High Score: ${highScore}`,
+      });
+    }
+  }, [highScore]);
 
   return (
     <div className="game-container">

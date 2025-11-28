@@ -9,25 +9,51 @@ export interface Bullet {
   y: number;
 }
 
+export type EnemyType = "helicopter" | "jet" | "ship" | "fuel";
+export type PowerUpType = "speed" | "rapidfire" | "shield";
+
 export interface Enemy {
   id: string;
   x: number;
   y: number;
-  type: "helicopter" | "jet" | "ship" | "fuel";
+  type: EnemyType;
   speed: number;
   direction: number;
+  shootCooldown?: number;
+}
+
+export interface PowerUp {
+  id: string;
+  x: number;
+  y: number;
+  type: PowerUpType;
+  speed: number;
+}
+
+export interface Explosion {
+  id: string;
+  x: number;
+  y: number;
+  frame: number;
+  maxFrames: number;
 }
 
 interface RiverRaidState {
   phase: GamePhase;
   score: number;
+  highScore: number;
   lives: number;
   playerX: number;
   fuel: number;
   bullets: Bullet[];
   enemies: Enemy[];
+  powerUps: PowerUp[];
+  explosions: Explosion[];
   riverOffset: number;
   username: string;
+  difficulty: number;
+  activePowerUps: { type: PowerUpType; endTime: number }[];
+  soundEnabled: boolean;
   
   // Actions
   setUsername: (name: string) => void;
@@ -49,28 +75,49 @@ interface RiverRaidState {
   removeEnemy: (id: string) => void;
   updateRiverOffset: () => void;
   setPlayerX: (x: number) => void;
+  addPowerUp: (powerUp: PowerUp) => void;
+  removePowerUp: (id: string) => void;
+  updatePowerUps: () => void;
+  activatePowerUp: (type: PowerUpType, duration: number) => void;
+  updateActivePowerUps: () => void;
+  hasPowerUp: (type: PowerUpType) => boolean;
+  addExplosion: (x: number, y: number) => void;
+  updateExplosions: () => void;
+  increaseDifficulty: () => void;
+  toggleSound: () => void;
+  setHighScore: (score: number) => void;
 }
 
 let bulletIdCounter = 0;
 let enemyIdCounter = 0;
+let powerUpIdCounter = 0;
+let explosionIdCounter = 0;
 
 export const useRiverRaid = create<RiverRaidState>()(
   subscribeWithSelector((set, get) => ({
     phase: "menu",
     score: 0,
+    highScore: 0,
     lives: 3,
     playerX: 400,
     fuel: 100,
     bullets: [],
     enemies: [],
+    powerUps: [],
+    explosions: [],
     riverOffset: 0,
     username: "Player",
+    difficulty: 1,
+    activePowerUps: [],
+    soundEnabled: true,
     
     setUsername: (name: string) => set({ username: name }),
     
     startGame: () => {
       bulletIdCounter = 0;
       enemyIdCounter = 0;
+      powerUpIdCounter = 0;
+      explosionIdCounter = 0;
       set({
         phase: "playing",
         score: 0,
@@ -79,7 +126,11 @@ export const useRiverRaid = create<RiverRaidState>()(
         fuel: 100,
         bullets: [],
         enemies: [],
+        powerUps: [],
+        explosions: [],
         riverOffset: 0,
+        difficulty: 1,
+        activePowerUps: [],
       });
     },
     
@@ -90,6 +141,8 @@ export const useRiverRaid = create<RiverRaidState>()(
     restartGame: () => {
       bulletIdCounter = 0;
       enemyIdCounter = 0;
+      powerUpIdCounter = 0;
+      explosionIdCounter = 0;
       set({
         phase: "menu",
         score: 0,
@@ -98,15 +151,26 @@ export const useRiverRaid = create<RiverRaidState>()(
         fuel: 100,
         bullets: [],
         enemies: [],
+        powerUps: [],
+        explosions: [],
         riverOffset: 0,
+        difficulty: 1,
+        activePowerUps: [],
       });
     },
     
-    gameOver: () => set({ phase: "gameover" }),
+    gameOver: () => {
+      const { score, highScore } = get();
+      if (score > highScore) {
+        set({ highScore: score });
+      }
+      set({ phase: "gameover" });
+    },
     
     movePlayer: (direction: "left" | "right") => {
-      const { playerX } = get();
-      const speed = 8;
+      const { playerX, activePowerUps } = get();
+      const hasSpeedBoost = activePowerUps.some(p => p.type === "speed" && p.endTime > Date.now());
+      const speed = hasSpeedBoost ? 12 : 8;
       const minX = 180;
       const maxX = 620;
       
@@ -130,8 +194,23 @@ export const useRiverRaid = create<RiverRaidState>()(
     addScore: (points: number) => set((state) => ({ score: state.score + points })),
     
     loseLife: () => {
-      const { lives } = get();
+      const { lives, activePowerUps } = get();
+      
+      // Check for shield power-up
+      const hasShield = activePowerUps.some(p => p.type === "shield" && p.endTime > Date.now());
+      if (hasShield) {
+        // Shield protects player, remove the shield
+        set({
+          activePowerUps: activePowerUps.filter(p => p.type !== "shield"),
+        });
+        return;
+      }
+      
       if (lives <= 1) {
+        const { score, highScore } = get();
+        if (score > highScore) {
+          set({ highScore: score });
+        }
         set({ lives: 0, phase: "gameover" });
       } else {
         set({ 
@@ -174,13 +253,43 @@ export const useRiverRaid = create<RiverRaidState>()(
     },
     
     updateEnemies: () => {
-      const { enemies, riverOffset } = get();
+      const { enemies, difficulty } = get();
       const updatedEnemies = enemies
-        .map((enemy) => ({
-          ...enemy,
-          y: enemy.y + enemy.speed,
-          x: enemy.x + enemy.direction * 2,
-        }))
+        .map((enemy) => {
+          let newX = enemy.x;
+          let newY = enemy.y + enemy.speed;
+          let newDirection = enemy.direction;
+          
+          // Different behavior based on enemy type
+          if (enemy.type === "helicopter") {
+            // Helicopters move side to side more aggressively
+            newX = enemy.x + enemy.direction * 3 * difficulty;
+            if (newX < 180 || newX > 620) {
+              newDirection = -enemy.direction;
+              newX = Math.max(180, Math.min(620, newX));
+            }
+          } else if (enemy.type === "jet") {
+            // Jets dive faster
+            newY = enemy.y + enemy.speed * 1.5;
+          } else if (enemy.type === "ship") {
+            // Ships move slowly side to side
+            newX = enemy.x + enemy.direction * 1;
+            if (newX < 180 || newX > 620) {
+              newDirection = -enemy.direction;
+              newX = Math.max(180, Math.min(620, newX));
+            }
+          } else if (enemy.type === "fuel") {
+            // Fuel depots move slowly down
+            newY = enemy.y + 1.5;
+          }
+          
+          return {
+            ...enemy,
+            x: newX,
+            y: newY,
+            direction: newDirection,
+          };
+        })
         .filter((enemy) => enemy.y < 700);
       set({ enemies: updatedEnemies });
     },
@@ -196,9 +305,92 @@ export const useRiverRaid = create<RiverRaidState>()(
     },
     
     setPlayerX: (x: number) => set({ playerX: x }),
+    
+    addPowerUp: (powerUp: PowerUp) => {
+      set((state) => ({ powerUps: [...state.powerUps, powerUp] }));
+    },
+    
+    removePowerUp: (id: string) => {
+      set((state) => ({
+        powerUps: state.powerUps.filter((p) => p.id !== id),
+      }));
+    },
+    
+    updatePowerUps: () => {
+      const { powerUps } = get();
+      const updatedPowerUps = powerUps
+        .map((powerUp) => ({ ...powerUp, y: powerUp.y + powerUp.speed }))
+        .filter((powerUp) => powerUp.y < 700);
+      set({ powerUps: updatedPowerUps });
+    },
+    
+    activatePowerUp: (type: PowerUpType, duration: number) => {
+      const { activePowerUps } = get();
+      const endTime = Date.now() + duration;
+      const existing = activePowerUps.find(p => p.type === type);
+      
+      if (existing) {
+        // Extend duration
+        set({
+          activePowerUps: activePowerUps.map(p => 
+            p.type === type ? { ...p, endTime: Math.max(p.endTime, endTime) } : p
+          ),
+        });
+      } else {
+        set({
+          activePowerUps: [...activePowerUps, { type, endTime }],
+        });
+      }
+    },
+    
+    updateActivePowerUps: () => {
+      const { activePowerUps } = get();
+      const now = Date.now();
+      set({
+        activePowerUps: activePowerUps.filter(p => p.endTime > now),
+      });
+    },
+    
+    hasPowerUp: (type: PowerUpType) => {
+      const { activePowerUps } = get();
+      return activePowerUps.some(p => p.type === type && p.endTime > Date.now());
+    },
+    
+    addExplosion: (x: number, y: number) => {
+      const explosion: Explosion = {
+        id: `explosion-${explosionIdCounter++}`,
+        x,
+        y,
+        frame: 0,
+        maxFrames: 12,
+      };
+      set((state) => ({ explosions: [...state.explosions, explosion] }));
+    },
+    
+    updateExplosions: () => {
+      const { explosions } = get();
+      const updatedExplosions = explosions
+        .map((exp) => ({ ...exp, frame: exp.frame + 1 }))
+        .filter((exp) => exp.frame < exp.maxFrames);
+      set({ explosions: updatedExplosions });
+    },
+    
+    increaseDifficulty: () => {
+      set((state) => ({ difficulty: Math.min(3, state.difficulty + 0.1) }));
+    },
+    
+    toggleSound: () => {
+      set((state) => ({ soundEnabled: !state.soundEnabled }));
+    },
+    
+    setHighScore: (score: number) => set({ highScore: score }),
   }))
 );
 
 export function generateEnemyId(): string {
   return `enemy-${enemyIdCounter++}`;
+}
+
+export function generatePowerUpId(): string {
+  return `powerup-${powerUpIdCounter++}`;
 }

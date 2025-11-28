@@ -280,6 +280,9 @@ class MCPCallee {
     finalScore: number;
     completed: boolean;
     playTime?: number;
+    highScore?: number;
+    difficulty?: number;
+    [key: string]: any;
   }) {
     this.sendToParent('mcp:complete', {
       success: true,

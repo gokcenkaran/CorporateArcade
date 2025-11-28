@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useMemo } from "react";
-import { useRiverRaid, generateEnemyId, type Enemy } from "@/lib/stores/useRiverRaid";
+import { useRiverRaid, generateEnemyId, generatePowerUpId, type Enemy, type PowerUp, type PowerUpType } from "@/lib/stores/useRiverRaid";
+import { soundManager } from "@/lib/sounds/SoundManager";
 
 const CANVAS_WIDTH = 800;
 const CANVAS_HEIGHT = 600;
@@ -12,22 +13,32 @@ export function RiverRaidGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number>();
   const lastSpawnRef = useRef<number>(0);
+  const lastPowerUpSpawnRef = useRef<number>(0);
+  const difficultyTimerRef = useRef<number>(0);
   const keysPressed = useRef<Set<string>>(new Set());
+  const soundInitializedRef = useRef<boolean>(false);
   
   const {
     phase,
     score,
+    highScore,
     lives,
     fuel,
     playerX,
     bullets,
     enemies,
+    powerUps,
+    explosions,
     riverOffset,
     username,
+    difficulty,
+    activePowerUps,
+    soundEnabled,
     movePlayer,
     shoot,
     updateBullets,
     updateEnemies,
+    updatePowerUps,
     updateRiverOffset,
     addEnemy,
     removeEnemy,
@@ -38,6 +49,14 @@ export function RiverRaidGame() {
     consumeFuel,
     startGame,
     restartGame,
+    addPowerUp,
+    removePowerUp,
+    activatePowerUp,
+    updateActivePowerUps,
+    hasPowerUp,
+    addExplosion,
+    updateExplosions,
+    increaseDifficulty,
   } = useRiverRaid();
 
   const lastShootRef = useRef<number>(0);
@@ -61,17 +80,35 @@ export function RiverRaidGame() {
     const handleKeyDown = (e: KeyboardEvent) => {
       keysPressed.current.add(e.code);
       
+      // Initialize sound on first user interaction
+      if (!soundInitializedRef.current) {
+        soundManager.initialize();
+        soundInitializedRef.current = true;
+      }
+      
       if (e.code === "Space") {
         e.preventDefault();
         if (phase === "menu" || phase === "gameover") {
           if (phase === "gameover") {
             restartGame();
           }
+          // Reset all timers
+          lastSpawnRef.current = 0;
+          lastPowerUpSpawnRef.current = 0;
+          difficultyTimerRef.current = 0;
           startGame();
+          if (soundEnabled) {
+            soundManager.startBackgroundMusic();
+          }
         } else if (phase === "playing") {
+          const hasRapidFire = hasPowerUp("rapidfire");
+          const cooldown = hasRapidFire ? 80 : 150;
           const now = Date.now();
-          if (now - lastShootRef.current > 150) {
+          if (now - lastShootRef.current > cooldown) {
             shoot();
+            if (soundEnabled) {
+              soundManager.playShoot();
+            }
             lastShootRef.current = now;
           }
         }
@@ -89,24 +126,64 @@ export function RiverRaidGame() {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [phase, shoot, startGame, restartGame]);
+  }, [phase, shoot, startGame, restartGame, soundEnabled, hasPowerUp]);
 
-  // Spawn enemies
+  // Stop music on game over
+  useEffect(() => {
+    if (phase === "gameover") {
+      soundManager.stopBackgroundMusic();
+      if (soundEnabled) {
+        soundManager.playGameOver();
+      }
+    }
+  }, [phase, soundEnabled]);
+
+  // Spawn enemies with progressive difficulty
   const spawnEnemy = useCallback(() => {
     const types: Array<"helicopter" | "jet" | "ship" | "fuel"> = ["helicopter", "jet", "ship", "fuel"];
-    const type = types[Math.floor(Math.random() * types.length)];
+    const weights = [0.3, 0.25, 0.25, 0.2]; // Weighted random
+    
+    let rand = Math.random();
+    let type: "helicopter" | "jet" | "ship" | "fuel" = "helicopter";
+    for (let i = 0; i < weights.length; i++) {
+      if (rand < weights[i]) {
+        type = types[i];
+        break;
+      }
+      rand -= weights[i];
+    }
+    
+    const baseSpeed = type === "fuel" ? 2 : 2 + Math.random() * 2;
+    const speedMultiplier = 1 + (difficulty - 1) * 0.3;
     
     const enemy: Enemy = {
       id: generateEnemyId(),
       x: RIVER_LEFT + 50 + Math.random() * (RIVER_RIGHT - RIVER_LEFT - 100),
       y: -50,
       type,
-      speed: type === "fuel" ? 2 : 2 + Math.random() * 2,
+      speed: baseSpeed * speedMultiplier,
       direction: Math.random() > 0.5 ? 1 : -1,
+      shootCooldown: type === "ship" ? 2000 : undefined,
     };
     
     addEnemy(enemy);
-  }, [addEnemy]);
+  }, [addEnemy, difficulty]);
+
+  // Spawn power-ups
+  const spawnPowerUp = useCallback(() => {
+    const types: PowerUpType[] = ["speed", "rapidfire", "shield"];
+    const type = types[Math.floor(Math.random() * types.length)];
+    
+    const powerUp: PowerUp = {
+      id: generatePowerUpId(),
+      x: RIVER_LEFT + 50 + Math.random() * (RIVER_RIGHT - RIVER_LEFT - 100),
+      y: -30,
+      type,
+      speed: 2,
+    };
+    
+    addPowerUp(powerUp);
+  }, [addPowerUp]);
 
   // Check collisions
   const checkCollisions = useCallback(() => {
@@ -122,6 +199,10 @@ export function RiverRaidGame() {
     if (currentSegment) {
       if (playerBounds.left < currentSegment.leftEdge + 20 || 
           playerBounds.right > currentSegment.rightEdge - 20) {
+        addExplosion(playerX, 500);
+        if (soundEnabled) {
+          soundManager.playExplosion();
+        }
         loseLife();
         return;
       }
@@ -138,12 +219,22 @@ export function RiverRaidGame() {
         if (distance < enemySize) {
           removeBullet(bullet.id);
           removeEnemy(enemy.id);
+          addExplosion(enemy.x, enemy.y);
+          
+          if (soundEnabled) {
+            if (enemy.type === "fuel") {
+              soundManager.playFuelPickup();
+            } else {
+              soundManager.playHit();
+            }
+          }
           
           if (enemy.type === "fuel") {
             addFuel(30);
             addScore(50);
           } else {
-            addScore(100);
+            const points = enemy.type === "jet" ? 150 : enemy.type === "helicopter" ? 120 : 100;
+            addScore(points);
           }
         }
       });
@@ -161,13 +252,130 @@ export function RiverRaidGame() {
           removeEnemy(enemy.id);
           addFuel(30);
           addScore(50);
+          if (soundEnabled) {
+            soundManager.playFuelPickup();
+          }
         } else {
           removeEnemy(enemy.id);
+          addExplosion(playerX, 500);
+          addExplosion(enemy.x, enemy.y);
+          if (soundEnabled) {
+            soundManager.playExplosion();
+          }
           loseLife();
         }
       }
     });
-  }, [playerX, bullets, enemies, riverPath, loseLife, removeBullet, removeEnemy, addScore, addFuel]);
+
+    // Check player-powerup collisions
+    powerUps.forEach((powerUp) => {
+      const dx = playerX - powerUp.x;
+      const dy = 500 - powerUp.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      if (distance < 30 + PLAYER_WIDTH / 2) {
+        removePowerUp(powerUp.id);
+        activatePowerUp(powerUp.type, 8000); // 8 seconds duration
+        addScore(25);
+        if (soundEnabled) {
+          soundManager.playPowerup();
+        }
+      }
+    });
+  }, [playerX, bullets, enemies, powerUps, riverPath, loseLife, removeBullet, removeEnemy, removePowerUp, addScore, addFuel, addExplosion, activatePowerUp, soundEnabled]);
+
+  // Draw explosion effect
+  const drawExplosion = (ctx: CanvasRenderingContext2D, x: number, y: number, frame: number, maxFrames: number) => {
+    const progress = frame / maxFrames;
+    const radius = 15 + progress * 25;
+    const alpha = 1 - progress;
+    
+    // Outer glow
+    const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+    gradient.addColorStop(0, `rgba(255, 255, 0, ${alpha})`);
+    gradient.addColorStop(0.4, `rgba(255, 150, 0, ${alpha * 0.8})`);
+    gradient.addColorStop(0.7, `rgba(255, 50, 0, ${alpha * 0.5})`);
+    gradient.addColorStop(1, `rgba(255, 0, 0, 0)`);
+    
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Inner core
+    if (frame < maxFrames / 2) {
+      ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+      ctx.beginPath();
+      ctx.arc(x, y, radius * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  };
+
+  // Draw power-up
+  const drawPowerUp = (ctx: CanvasRenderingContext2D, powerUp: PowerUp) => {
+    const { x, y, type } = powerUp;
+    const pulse = Math.sin(Date.now() * 0.01) * 3;
+    
+    // Draw outer glow
+    ctx.shadowColor = type === "speed" ? "#00FF00" : type === "rapidfire" ? "#FF0000" : "#00FFFF";
+    ctx.shadowBlur = 10 + pulse;
+    
+    ctx.fillStyle = type === "speed" ? "#00FF00" : type === "rapidfire" ? "#FF0000" : "#00FFFF";
+    ctx.beginPath();
+    ctx.arc(x, y, 15 + pulse / 2, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.shadowBlur = 0;
+    
+    // Draw icon
+    ctx.fillStyle = "#FFFFFF";
+    ctx.font = "bold 14px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    
+    if (type === "speed") {
+      ctx.fillText("S", x, y);
+    } else if (type === "rapidfire") {
+      ctx.fillText("R", x, y);
+    } else {
+      ctx.fillText("!", x, y);
+    }
+  };
+
+  // Draw active power-up indicators
+  const drawActivePowerUps = (ctx: CanvasRenderingContext2D) => {
+    const now = Date.now();
+    let yOffset = 100;
+    
+    activePowerUps.forEach((powerUp) => {
+      const remaining = Math.max(0, (powerUp.endTime - now) / 1000);
+      if (remaining <= 0) return;
+      
+      const color = powerUp.type === "speed" ? "#00FF00" : powerUp.type === "rapidfire" ? "#FF0000" : "#00FFFF";
+      const label = powerUp.type === "speed" ? "HIZLI" : powerUp.type === "rapidfire" ? "ATEŞ" : "KALKAN";
+      
+      // Draw background
+      ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+      ctx.fillRect(10, yOffset, 80, 25);
+      
+      // Draw progress bar
+      ctx.fillStyle = color;
+      ctx.fillRect(10, yOffset, 80 * (remaining / 8), 25);
+      
+      // Draw border
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(10, yOffset, 80, 25);
+      
+      // Draw text
+      ctx.fillStyle = "#FFFFFF";
+      ctx.font = "bold 12px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText(label, 50, yOffset + 16);
+      
+      yOffset += 30;
+    });
+  };
 
   // Draw game
   const draw = useCallback((ctx: CanvasRenderingContext2D) => {
@@ -220,6 +428,11 @@ export function RiverRaidGame() {
       ctx.fill();
     });
 
+    // Draw power-ups
+    powerUps.forEach((powerUp) => {
+      drawPowerUp(ctx, powerUp);
+    });
+
     // Draw enemies
     enemies.forEach((enemy) => {
       if (enemy.type === "fuel") {
@@ -234,11 +447,19 @@ export function RiverRaidGame() {
         ctx.fillText("E", enemy.x, enemy.y + 15);
         ctx.fillText("L", enemy.x, enemy.y + 25);
       } else if (enemy.type === "helicopter") {
-        // Draw helicopter
+        // Draw helicopter with rotating blade
+        const bladeAngle = (Date.now() / 50) % 360;
         ctx.fillStyle = "#00FF00";
         ctx.fillRect(enemy.x - 20, enemy.y - 10, 40, 20);
+        
+        // Rotor blade
+        ctx.save();
+        ctx.translate(enemy.x, enemy.y - 8);
+        ctx.rotate(bladeAngle * Math.PI / 180);
         ctx.fillStyle = "#FFFFFF";
-        ctx.fillRect(enemy.x - 25, enemy.y - 3, 50, 6);
+        ctx.fillRect(-25, -2, 50, 4);
+        ctx.restore();
+        
         ctx.fillStyle = "#000000";
         ctx.fillRect(enemy.x - 5, enemy.y - 5, 10, 10);
       } else if (enemy.type === "jet") {
@@ -251,16 +472,53 @@ export function RiverRaidGame() {
         ctx.lineTo(enemy.x + 15, enemy.y + 15);
         ctx.closePath();
         ctx.fill();
+        
+        // Jet exhaust
+        ctx.fillStyle = "#FFA500";
+        ctx.beginPath();
+        ctx.moveTo(enemy.x - 3, enemy.y + 15);
+        ctx.lineTo(enemy.x, enemy.y + 25);
+        ctx.lineTo(enemy.x + 3, enemy.y + 15);
+        ctx.closePath();
+        ctx.fill();
       } else if (enemy.type === "ship") {
         // Draw ship
         ctx.fillStyle = "#8B4513";
         ctx.fillRect(enemy.x - 25, enemy.y - 8, 50, 16);
         ctx.fillStyle = "#A0522D";
         ctx.fillRect(enemy.x - 5, enemy.y - 18, 10, 10);
+        
+        // Ship turret
+        ctx.fillStyle = "#333333";
+        ctx.beginPath();
+        ctx.arc(enemy.x, enemy.y - 4, 6, 0, Math.PI * 2);
+        ctx.fill();
       }
     });
 
-    // Draw player jet
+    // Draw explosions
+    explosions.forEach((explosion) => {
+      drawExplosion(ctx, explosion.x, explosion.y, explosion.frame, explosion.maxFrames);
+    });
+
+    // Draw player jet with shield glow if active
+    const hasShield = activePowerUps.some(p => p.type === "shield" && p.endTime > Date.now());
+    
+    if (hasShield) {
+      // Draw shield bubble
+      const pulseSize = Math.sin(Date.now() * 0.01) * 5;
+      ctx.strokeStyle = "rgba(0, 255, 255, 0.7)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(playerX, 500, PLAYER_WIDTH + 10 + pulseSize, 0, Math.PI * 2);
+      ctx.stroke();
+      
+      ctx.fillStyle = "rgba(0, 255, 255, 0.2)";
+      ctx.beginPath();
+      ctx.arc(playerX, 500, PLAYER_WIDTH + 10 + pulseSize, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    
     ctx.fillStyle = "#FFD700";
     ctx.beginPath();
     ctx.moveTo(playerX, 500 - PLAYER_HEIGHT / 2);
@@ -280,7 +538,28 @@ export function RiverRaidGame() {
     ctx.lineTo(playerX + 8, 500 + 5);
     ctx.closePath();
     ctx.fill();
-  }, [riverPath, bullets, enemies, playerX]);
+
+    // Draw jet engine flames
+    const flameHeight = 10 + Math.random() * 5;
+    ctx.fillStyle = "#FF4500";
+    ctx.beginPath();
+    ctx.moveTo(playerX - 3, 500 + PLAYER_HEIGHT / 2 + 10);
+    ctx.lineTo(playerX, 500 + PLAYER_HEIGHT / 2 + 10 + flameHeight);
+    ctx.lineTo(playerX + 3, 500 + PLAYER_HEIGHT / 2 + 10);
+    ctx.closePath();
+    ctx.fill();
+
+    // Draw active power-up indicators
+    drawActivePowerUps(ctx);
+
+    // Draw difficulty indicator
+    ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    ctx.fillRect(CANVAS_WIDTH - 100, 60, 90, 25);
+    ctx.fillStyle = "#FFFFFF";
+    ctx.font = "bold 12px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(`LVL: ${difficulty.toFixed(1)}`, CANVAS_WIDTH - 55, 77);
+  }, [riverPath, bullets, enemies, powerUps, explosions, playerX, activePowerUps, riverOffset, difficulty]);
 
   // Game loop
   useEffect(() => {
@@ -291,6 +570,14 @@ export function RiverRaidGame() {
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+
+    // Initialize timers on game start
+    if (difficultyTimerRef.current === 0) {
+      difficultyTimerRef.current = performance.now();
+    }
+    if (lastPowerUpSpawnRef.current === 0) {
+      lastPowerUpSpawnRef.current = performance.now();
+    }
 
     const gameLoop = (timestamp: number) => {
       // Handle continuous key presses
@@ -303,9 +590,14 @@ export function RiverRaidGame() {
 
       // Continuous shooting while Space is held
       if (keysPressed.current.has("Space")) {
+        const hasRapidFire = hasPowerUp("rapidfire");
+        const cooldown = hasRapidFire ? 80 : 150;
         const now = Date.now();
-        if (now - lastShootRef.current > 150) {
+        if (now - lastShootRef.current > cooldown) {
           shoot();
+          if (soundEnabled) {
+            soundManager.playShoot();
+          }
           lastShootRef.current = now;
         }
       }
@@ -313,13 +605,31 @@ export function RiverRaidGame() {
       // Update game state
       updateBullets();
       updateEnemies();
+      updatePowerUps();
       updateRiverOffset();
       consumeFuel();
+      updateExplosions();
+      updateActivePowerUps();
 
-      // Spawn enemies
-      if (timestamp - lastSpawnRef.current > 1500) {
+      // Spawn enemies - faster with higher difficulty
+      const spawnInterval = Math.max(800, 1500 - (difficulty - 1) * 200);
+      if (timestamp - lastSpawnRef.current > spawnInterval) {
         spawnEnemy();
         lastSpawnRef.current = timestamp;
+      }
+
+      // Spawn power-ups occasionally
+      if (timestamp - lastPowerUpSpawnRef.current > 10000) { // Every 10 seconds
+        if (Math.random() < 0.5) { // 50% chance
+          spawnPowerUp();
+        }
+        lastPowerUpSpawnRef.current = timestamp;
+      }
+
+      // Increase difficulty over time
+      if (timestamp - difficultyTimerRef.current > 15000) { // Every 15 seconds
+        increaseDifficulty();
+        difficultyTimerRef.current = timestamp;
       }
 
       // Check collisions
@@ -338,7 +648,7 @@ export function RiverRaidGame() {
         cancelAnimationFrame(animationRef.current);
       }
     };
-  }, [phase, movePlayer, shoot, updateBullets, updateEnemies, updateRiverOffset, consumeFuel, spawnEnemy, checkCollisions, draw]);
+  }, [phase, movePlayer, shoot, updateBullets, updateEnemies, updatePowerUps, updateRiverOffset, consumeFuel, spawnEnemy, spawnPowerUp, checkCollisions, draw, updateExplosions, updateActivePowerUps, increaseDifficulty, hasPowerUp, soundEnabled, difficulty]);
 
   // Draw menu or game over screen with proper animation frame cleanup
   useEffect(() => {
@@ -395,65 +705,84 @@ export function RiverRaidGame() {
         ctx.fillStyle = "#000000";
         ctx.font = "bold 60px 'Courier New', monospace";
         ctx.textAlign = "center";
-        ctx.fillText("RIVER RAID", CANVAS_WIDTH / 2 + 3, 183);
+        ctx.fillText("RIVER RAID", CANVAS_WIDTH / 2 + 3, 153);
         ctx.fillStyle = "#FFD700";
-        ctx.fillText("RIVER RAID", CANVAS_WIDTH / 2, 180);
+        ctx.fillText("RIVER RAID", CANVAS_WIDTH / 2, 150);
 
         // Draw subtitle
         ctx.fillStyle = "#FFFFFF";
         ctx.font = "24px 'Courier New', monospace";
-        ctx.fillText(`Oyuncu: ${username}`, CANVAS_WIDTH / 2, 240);
+        ctx.fillText(`Oyuncu: ${username}`, CANVAS_WIDTH / 2, 200);
+
+        // Draw high score if exists
+        if (highScore > 0) {
+          ctx.fillStyle = "#00FF00";
+          ctx.font = "bold 20px 'Courier New', monospace";
+          ctx.fillText(`YÜKSEK SKOR: ${highScore}`, CANVAS_WIDTH / 2, 235);
+        }
 
         // Draw instructions box
         ctx.fillStyle = "rgba(0,0,0,0.7)";
-        ctx.fillRect(CANVAS_WIDTH / 2 - 180, 290, 360, 130);
+        ctx.fillRect(CANVAS_WIDTH / 2 - 180, 270, 360, 180);
         ctx.strokeStyle = "#00FF00";
         ctx.lineWidth = 2;
-        ctx.strokeRect(CANVAS_WIDTH / 2 - 180, 290, 360, 130);
+        ctx.strokeRect(CANVAS_WIDTH / 2 - 180, 270, 360, 180);
 
         ctx.fillStyle = "#00FF00";
         ctx.font = "20px 'Courier New', monospace";
-        ctx.fillText("KONTROLLER", CANVAS_WIDTH / 2, 320);
+        ctx.fillText("KONTROLLER", CANVAS_WIDTH / 2, 300);
         ctx.fillStyle = "#FFFFFF";
-        ctx.font = "18px 'Courier New', monospace";
-        ctx.fillText("← → Ok Tuşları: Hareket", CANVAS_WIDTH / 2, 355);
-        ctx.fillText("SPACE: Ateş Et", CANVAS_WIDTH / 2, 385);
+        ctx.font = "16px 'Courier New', monospace";
+        ctx.fillText("← → Ok Tuşları: Hareket", CANVAS_WIDTH / 2, 335);
+        ctx.fillText("SPACE: Ateş Et", CANVAS_WIDTH / 2, 365);
+        ctx.fillText("Yakıtı topla, düşmanları vur!", CANVAS_WIDTH / 2, 405);
+        ctx.fillText("Güç-artırımlarını kaçırma!", CANVAS_WIDTH / 2, 430);
 
         // Draw start prompt with blink
         if (blink) {
           ctx.fillStyle = "#FFFF00";
           ctx.font = "bold 28px 'Courier New', monospace";
-          ctx.fillText("BAŞLAMAK İÇİN SPACE'E BASIN", CANVAS_WIDTH / 2, 480);
+          ctx.fillText("BAŞLAMAK İÇİN SPACE'E BASIN", CANVAS_WIDTH / 2, 510);
         }
       } else if (phase === "gameover") {
         // Draw game over with shadow
         ctx.fillStyle = "#000000";
         ctx.font = "bold 60px 'Courier New', monospace";
         ctx.textAlign = "center";
-        ctx.fillText("OYUN BİTTİ", CANVAS_WIDTH / 2 + 3, 203);
+        ctx.fillText("OYUN BİTTİ", CANVAS_WIDTH / 2 + 3, 173);
         ctx.fillStyle = "#FF0000";
-        ctx.fillText("OYUN BİTTİ", CANVAS_WIDTH / 2, 200);
+        ctx.fillText("OYUN BİTTİ", CANVAS_WIDTH / 2, 170);
 
         // Draw final score box
         ctx.fillStyle = "rgba(0,0,0,0.7)";
-        ctx.fillRect(CANVAS_WIDTH / 2 - 150, 240, 300, 120);
+        ctx.fillRect(CANVAS_WIDTH / 2 - 150, 210, 300, 160);
         ctx.strokeStyle = "#FFD700";
         ctx.lineWidth = 2;
-        ctx.strokeRect(CANVAS_WIDTH / 2 - 150, 240, 300, 120);
+        ctx.strokeRect(CANVAS_WIDTH / 2 - 150, 210, 300, 160);
 
         ctx.fillStyle = "#FFD700";
         ctx.font = "bold 40px 'Courier New', monospace";
-        ctx.fillText(`SKOR: ${score}`, CANVAS_WIDTH / 2, 290);
+        ctx.fillText(`SKOR: ${score}`, CANVAS_WIDTH / 2, 260);
+
+        // Show if new high score
+        if (score >= highScore && score > 0) {
+          ctx.fillStyle = "#00FF00";
+          ctx.font = "bold 20px 'Courier New', monospace";
+          ctx.fillText("YENİ REKOR!", CANVAS_WIDTH / 2, 295);
+        }
 
         ctx.fillStyle = "#FFFFFF";
-        ctx.font = "24px 'Courier New', monospace";
-        ctx.fillText(`Oyuncu: ${username}`, CANVAS_WIDTH / 2, 340);
+        ctx.font = "20px 'Courier New', monospace";
+        ctx.fillText(`Oyuncu: ${username}`, CANVAS_WIDTH / 2, 330);
+        ctx.fillStyle = "#888888";
+        ctx.font = "16px 'Courier New', monospace";
+        ctx.fillText(`Yüksek Skor: ${highScore}`, CANVAS_WIDTH / 2, 360);
 
         // Draw restart prompt with blink
         if (blink) {
           ctx.fillStyle = "#00FF00";
-          ctx.font = "bold 24px 'Courier New', monospace";
-          ctx.fillText("YENİDEN BAŞLAMAK İÇİN SPACE'E BASIN", CANVAS_WIDTH / 2, 420);
+          ctx.font = "bold 22px 'Courier New', monospace";
+          ctx.fillText("YENİDEN BAŞLAMAK İÇİN SPACE'E BASIN", CANVAS_WIDTH / 2, 430);
         }
       }
 
@@ -467,7 +796,7 @@ export function RiverRaidGame() {
         cancelAnimationFrame(menuAnimationId);
       }
     };
-  }, [phase, score, username]);
+  }, [phase, score, username, highScore]);
 
   return (
     <canvas
