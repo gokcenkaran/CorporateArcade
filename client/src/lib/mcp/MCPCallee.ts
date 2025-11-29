@@ -1,3 +1,8 @@
+/**
+ * MCPCallee - MCP SDK Protocol Compatible Implementation
+ * Based on aiNoodle MCP SDK v1.2.0 specification
+ */
+
 export interface CalleeContext {
   customerId?: string;
   projectId?: string;
@@ -8,6 +13,8 @@ export interface CalleeContext {
   language?: string;
   protocol?: 'standard' | 'ainoodle';
   mode?: 'layer' | 'iframe' | 'standalone';
+  token?: string;
+  config?: Record<string, any>;
 }
 
 type InitCallback = (context: CalleeContext) => void;
@@ -38,19 +45,17 @@ class MCPCallee {
     this.capabilities = options.capabilities || [];
     this.debug = options.debug || false;
 
-    // Detect mode - layer mode if we have a parent window
     this.detectMode();
     this.setupMessageListener();
     this.parseUrlParams();
     
-    // Signal ready to parent in layer mode
+    // Signal ready to parent in layer/iframe mode
     if (this.mode === 'layer' || this.mode === 'iframe') {
       this.signalReady();
     }
   }
 
   private detectMode() {
-    // Check if we're in an iframe or layer
     const urlParams = new URLSearchParams(window.location.search);
     const modeParam = urlParams.get('mode');
     
@@ -59,7 +64,6 @@ class MCPCallee {
     } else if (modeParam === 'iframe') {
       this.mode = 'iframe';
     } else if (window.parent !== window) {
-      // We're in an iframe/layer
       this.mode = 'layer';
     } else {
       this.mode = 'standalone';
@@ -69,8 +73,8 @@ class MCPCallee {
   }
 
   private signalReady() {
-    // Signal to parent that we're ready to receive init
-    this.sendToParent('mcp:app_ready', {
+    // Signal to parent that app is ready to receive init
+    this.sendToParent('mcp:ready', {
       appId: this.appId,
       version: this.version,
       capabilities: this.capabilities,
@@ -132,7 +136,6 @@ class MCPCallee {
 
     this.log('Parsed URL params:', context);
 
-    // In layer mode, wait for parent to send init
     // In standalone mode, auto-initialize with URL params
     if (this.mode === 'standalone') {
       setTimeout(() => {
@@ -141,7 +144,7 @@ class MCPCallee {
         }
       }, 100);
     } else {
-      // In layer/iframe mode, wait longer for parent init, then fallback to URL params
+      // In layer/iframe mode, wait for parent init, then fallback to URL params
       setTimeout(() => {
         if (!this.initialized) {
           this.log('No init from parent, using URL params');
@@ -151,24 +154,44 @@ class MCPCallee {
     }
   }
 
-  private handleMessage(message: { type: string; payload?: any }) {
+  private handleMessage(message: { type: string; payload?: any; context?: any; data?: any }) {
     this.log('Received message:', message);
 
     switch (message.type) {
       case 'mcp:init':
-        this.handleInit(message.payload);
+        // Support both payload and context formats (SDK compatibility)
+        const initData = message.context || message.payload || {};
+        this.handleInit(this.normalizeContext(initData));
         break;
       case 'mcp:control':
-        if (this.controlCallback && message.payload) {
-          this.controlCallback(message.payload.action, message.payload.params);
+        const controlData = message.payload || message.data || {};
+        if (this.controlCallback) {
+          this.controlCallback(controlData.action, controlData.params || controlData);
         }
         break;
       case 'mcp:close':
+        const closeData = message.payload || message.data || {};
         if (this.closeCallback) {
-          this.closeCallback(message.payload?.reason || 'unknown');
+          this.closeCallback(closeData.reason || 'unknown');
         }
         break;
     }
+  }
+
+  private normalizeContext(data: any): CalleeContext {
+    return {
+      customerId: data.customerId || data.customer_id,
+      projectId: data.projectId || data.project_id,
+      userId: data.userId || data.user_id,
+      resourceId: data.resourceId || data.resource_id,
+      token: data.token,
+      theme: data.theme || data.config?.theme || 'dark',
+      language: data.language || 'tr',
+      protocol: data.protocol || 'standard',
+      mode: this.mode,
+      config: data.config,
+      params: data.params || {},
+    };
   }
 
   private handleInit(context: CalleeContext) {
@@ -179,28 +202,15 @@ class MCPCallee {
     if (this.initCallback) {
       this.initCallback(context);
     }
-
-    // Send ready message to parent
-    this.sendToParent('mcp:ready', {
-      appId: this.appId,
-      version: this.version,
-      capabilities: this.capabilities,
-    });
   }
 
-  private sendToParent(type: string, payload?: any) {
-    // Always try to send to parent in layer/iframe mode
-    if (this.mode === 'layer' || this.mode === 'iframe') {
+  private sendToParent(type: string, data?: any) {
+    if (this.mode === 'layer' || this.mode === 'iframe' || window.parent !== window) {
       try {
-        window.parent.postMessage({ type, payload }, '*');
-        this.log('Sent to parent:', { type, payload });
-      } catch (error) {
-        this.log('Failed to send to parent:', error);
-      }
-    } else if (window.parent !== window) {
-      try {
-        window.parent.postMessage({ type, payload }, '*');
-        this.log('Sent to parent:', { type, payload });
+        // Send in SDK-compatible format (data directly, not wrapped in payload)
+        const message = { type, ...data };
+        window.parent.postMessage(message, '*');
+        this.log('Sent to parent:', message);
       } catch (error) {
         this.log('Failed to send to parent:', error);
       }
@@ -212,14 +222,13 @@ class MCPCallee {
   }
 
   requestClose() {
-    this.sendToParent('mcp:request_close', {
+    this.sendToParent('mcp:close-request', {
       appId: this.appId,
     });
   }
 
   onInit(callback: InitCallback) {
     this.initCallback = callback;
-    // If already initialized, call immediately
     if (this.initialized && this.context) {
       callback(this.context);
     }
@@ -250,10 +259,11 @@ class MCPCallee {
     });
   }
 
+  // Progress methods - SDK compatible format
   sendProgress(data: { current: number; total: number; message?: string }) {
     this.sendToParent('mcp:progress', {
-      type: 'game_progress',
-      data,
+      appId: this.appId,
+      data: data,
     });
   }
 
@@ -261,18 +271,22 @@ class MCPCallee {
     score: number;
     lives: number;
     level?: number;
+    fuel?: number;
     status: 'playing' | 'paused' | 'gameover';
   }) {
     this.sendToParent('mcp:progress', {
+      appId: this.appId,
       type: 'game_progress',
-      data,
+      data: data,
     });
   }
 
+  // Complete methods - SDK compatible format
   complete(data: any) {
     this.sendToParent('mcp:complete', {
+      appId: this.appId,
       success: true,
-      ...data,
+      data: data,
     });
   }
 
@@ -282,25 +296,41 @@ class MCPCallee {
     playTime?: number;
     highScore?: number;
     difficulty?: number;
+    level?: number;
+    won?: boolean;
+    timeElapsed?: number;
     [key: string]: any;
   }) {
     this.sendToParent('mcp:complete', {
+      appId: this.appId,
       success: true,
       type: 'game_complete',
-      ...data,
+      data: data,
     });
   }
 
+  // Cancel method - SDK compatible format
   cancel(reason: string) {
-    this.sendToParent('mcp:cancel', { reason });
+    this.sendToParent('mcp:cancel', {
+      appId: this.appId,
+      reason: reason,
+    });
   }
 
   cancelWithData(reason: string, data: any) {
-    this.sendToParent('mcp:cancel', { reason, data });
+    this.sendToParent('mcp:cancel', {
+      appId: this.appId,
+      reason: reason,
+      data: data,
+    });
   }
 
+  // Error method - SDK compatible format
   error(code: string, message: string) {
-    this.sendToParent('mcp:error', { code, message });
+    this.sendToParent('mcp:error', {
+      appId: this.appId,
+      error: { code, message },
+    });
   }
 
   isInitialized(): boolean {
