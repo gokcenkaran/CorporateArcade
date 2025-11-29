@@ -19,10 +19,6 @@ class CorporateBreakout {
     this.startTime = null;
     this.highScore = this._loadHighScore();
 
-    // Canvas boyutları
-    this.resizeCanvas();
-    window.addEventListener('resize', () => this.resizeCanvas());
-
     // Top
     this.ball = {
       x: 0,
@@ -42,7 +38,7 @@ class CorporateBreakout {
       speed: 8
     };
 
-    // Tuğlalar
+    // Tuğlalar (brickConfig resizeCanvas'tan önce tanımlanmalı)
     this.bricks = [];
     this.brickConfig = {
       rows: 5,
@@ -53,6 +49,10 @@ class CorporateBreakout {
       offsetTop: 60,
       offsetLeft: 0
     };
+
+    // Canvas boyutları (brickConfig tanımlandıktan sonra)
+    this.resizeCanvas();
+    window.addEventListener('resize', () => this.resizeCanvas());
 
     // Kontroller
     this.keys = {
