@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP Caller Test - Corporate Arcade</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #0f0f1a;
+      color: #fff;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr 400px;
+      gap: 20px;
+      height: calc(100vh - 40px);
+    }
+    h1 { color: #4ecca3; margin-bottom: 10px; font-size: 20px; }
+    h2 { color: #e94560; font-size: 14px; margin-bottom: 10px; }
+
+    /* Layer Container */
+    .layer-container {
+      background: #1a1a2e;
+      border-radius: 12px;
+      overflow: hidden;
+      position: relative;
+    }
+    .layer-header {
+      background: rgba(0,0,0,0.3);
+      padding: 10px 15px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .layer-header span { font-size: 12px; color: #888; }
+    .layer-content {
+      height: calc(100% - 44px);
+    }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+
+    /* Log Panel */
+    .log-panel {
+      background: #1a1a2e;
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .log-header {
+      background: rgba(0,0,0,0.3);
+      padding: 15px;
+    }
+    .log-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+    }
+    .log-entry {
+      background: rgba(0,0,0,0.2);
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      font-family: monospace;
+    }
+    .log-entry.ready { border-left: 3px solid #4ecca3; }
+    .log-entry.progress { border-left: 3px solid #feca57; }
+    .log-entry.complete { border-left: 3px solid #1dd1a1; }
+    .log-entry.cancel { border-left: 3px solid #e94560; }
+    .log-entry.close { border-left: 3px solid #ff6b6b; }
+    .log-time { color: #666; font-size: 10px; }
+    .log-type {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      margin-left: 8px;
+    }
+    .log-type.ready { background: #4ecca3; color: #000; }
+    .log-type.progress { background: #feca57; color: #000; }
+    .log-type.complete { background: #1dd1a1; color: #000; }
+    .log-type.cancel { background: #e94560; color: #fff; }
+    .log-type.close { background: #ff6b6b; color: #fff; }
+    .log-data {
+      margin-top: 8px;
+      background: rgba(0,0,0,0.3);
+      padding: 8px;
+      border-radius: 4px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: #aaa;
+    }
+
+    /* Controls */
+    .controls {
+      padding: 15px;
+      background: rgba(0,0,0,0.2);
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    button {
+      background: #4ecca3;
+      border: none;
+      color: #000;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+      font-size: 12px;
+      transition: all 0.2s;
+    }
+    button:hover { transform: translateY(-1px); }
+    button.danger { background: #e94560; color: #fff; }
+    button.secondary { background: #333; color: #fff; }
+
+    /* Result Display */
+    .result-panel {
+      background: rgba(0,0,0,0.3);
+      padding: 15px;
+      border-top: 1px solid #333;
+    }
+    .result-panel h3 {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 10px;
+    }
+    .result-content {
+      background: #0f0f1a;
+      padding: 10px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 12px;
+      min-height: 60px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Layer (iframe) -->
+    <div class="layer-container">
+      <div class="layer-header">
+        <h1>🎮 Layer Preview</h1>
+        <span id="status">Waiting...</span>
+      </div>
+      <div class="layer-content">
+        <iframe id="gameFrame" src="index.html"></iframe>
+      </div>
+    </div>
+
+    <!-- Log Panel -->
+    <div class="log-panel">
+      <div class="log-header">
+        <h2>📡 MCP Message Log</h2>
+      </div>
+
+      <div class="controls">
+        <button onclick="sendInit()">📤 Send Init</button>
+        <button onclick="sendControl('pause')" class="secondary">⏸ Pause</button>
+        <button onclick="sendControl('resume')" class="secondary">▶ Resume</button>
+        <button onclick="sendControl('close')" class="danger">✕ Close</button>
+        <button onclick="clearLogs()" class="secondary">🗑 Clear</button>
+      </div>
+
+      <div class="log-content" id="logContent">
+        <!-- Logs will appear here -->
+      </div>
+
+      <div class="result-panel">
+        <h3>📊 Final Result</h3>
+        <div class="result-content" id="resultContent">
+          Oyun tamamlandığında sonuç burada görünecek...
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const iframe = document.getElementById('gameFrame');
+    const logContent = document.getElementById('logContent');
+    const resultContent = document.getElementById('resultContent');
+    const status = document.getElementById('status');
+
+    let messageCount = 0;
+
+    // Listen for messages from iframe (Callee)
+    window.addEventListener('message', (event) => {
+      const data = event.data;
+      if (!data || !data.type) return;
+
+      // Filter MCP messages
+      if (!data.type.startsWith('mcp:')) return;
+
+      messageCount++;
+      logMessage(data);
+
+      // Handle specific message types
+      switch (data.type) {
+        case 'mcp:ready':
+          status.textContent = '✅ Ready';
+          status.style.color = '#4ecca3';
+          // Auto-send init after ready
+          setTimeout(() => sendInit(), 500);
+          break;
+
+        case 'mcp:progress':
+          status.textContent = `🎮 Playing - Score: ${data.data?.score || 0}`;
+          status.style.color = '#feca57';
+          break;
+
+        case 'mcp:complete':
+          status.textContent = '🏆 Completed';
+          status.style.color = '#1dd1a1';
+          showResult(data);
+          break;
+
+        case 'mcp:cancel':
+          status.textContent = '❌ Cancelled';
+          status.style.color = '#e94560';
+          showResult(data);
+          break;
+
+        case 'mcp:close-request':
+          status.textContent = '🚪 Close Requested';
+          status.style.color = '#ff6b6b';
+          break;
+      }
+    });
+
+    // Log a message
+    function logMessage(data) {
+      const type = data.type.replace('mcp:', '');
+      const time = new Date().toLocaleTimeString();
+
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+      entry.innerHTML = `
+        <span class="log-time">${time}</span>
+        <span class="log-type ${type}">${type.toUpperCase()}</span>
+        <div class="log-data">${JSON.stringify(data, null, 2)}</div>
+      `;
+
+      logContent.insertBefore(entry, logContent.firstChild);
+    }
+
+    // Send init to iframe
+    function sendInit() {
+      const initMessage = {
+        type: 'mcp:init',
+        context: {
+          resourceId: 'test-game-' + Date.now(),
+          userId: 'test-user-001',
+          customerId: 'test-customer',
+          projectId: 'test-project',
+          token: 'test-token-xyz',
+          config: {
+            theme: 'dark',
+            language: 'tr'
+          }
+        }
+      };
+
+      iframe.contentWindow.postMessage(initMessage, '*');
+      logMessage({ type: 'mcp:init-sent', ...initMessage });
+      status.textContent = '📤 Init Sent';
+    }
+
+    // Send control command
+    function sendControl(action) {
+      const controlMessage = {
+        type: 'mcp:control',
+        action: action,
+        payload: {}
+      };
+
+      iframe.contentWindow.postMessage(controlMessage, '*');
+      logMessage({ type: 'mcp:control-sent', action });
+    }
+
+    // Show final result
+    function showResult(data) {
+      resultContent.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+    }
+
+    // Clear logs
+    function clearLogs() {
+      logContent.innerHTML = '';
+      resultContent.textContent = 'Oyun tamamlandığında sonuç burada görünecek...';
+      messageCount = 0;
+    }
+
+    // Initial log
+    logMessage({
+      type: 'mcp:test-started',
+      message: 'Test caller ready. Waiting for iframe to load...',
+      timestamp: new Date().toISOString()
+    });
+  </script>
+</body>
+</html>
