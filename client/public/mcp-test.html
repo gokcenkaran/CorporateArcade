@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP Layer Mode Test - River Raid</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e; 
+      color: #eee; 
+      padding: 20px;
+      min-height: 100vh;
+    }
+    h1 { color: #00d4ff; margin-bottom: 20px; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .controls { 
+      display: flex; 
+      gap: 10px; 
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    button { 
+      padding: 12px 24px; 
+      font-size: 14px; 
+      cursor: pointer;
+      background: #16213e;
+      color: #fff;
+      border: 2px solid #00d4ff;
+      border-radius: 8px;
+      transition: all 0.3s;
+    }
+    button:hover { 
+      background: #00d4ff; 
+      color: #1a1a2e;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .game-container {
+      position: relative;
+      width: 100%;
+      height: 650px;
+      border: 3px solid #00d4ff;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #000;
+    }
+    .game-container iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+    .log-container {
+      margin-top: 20px;
+      background: #16213e;
+      border-radius: 12px;
+      padding: 15px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .log-container h3 {
+      color: #00d4ff;
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .log-entry {
+      font-family: 'Monaco', 'Consolas', monospace;
+      font-size: 12px;
+      padding: 8px;
+      margin: 4px 0;
+      border-radius: 4px;
+      word-break: break-all;
+    }
+    .log-entry.sent { background: #1e3a5f; border-left: 3px solid #00d4ff; }
+    .log-entry.received { background: #2d1f3d; border-left: 3px solid #ff00ff; }
+    .log-entry .time { color: #888; margin-right: 10px; }
+    .log-entry .type { font-weight: bold; }
+    .status-bar {
+      display: flex;
+      gap: 20px;
+      margin-bottom: 20px;
+      padding: 15px;
+      background: #16213e;
+      border-radius: 8px;
+    }
+    .status-item {
+      display: flex;
+      flex-direction: column;
+    }
+    .status-item label { color: #888; font-size: 12px; }
+    .status-item value { color: #00d4ff; font-size: 18px; font-weight: bold; }
+    .clear-btn {
+      background: transparent;
+      border: 1px solid #666;
+      padding: 4px 12px;
+      font-size: 12px;
+    }
+    .test-result {
+      padding: 15px;
+      margin-top: 10px;
+      border-radius: 8px;
+      font-weight: bold;
+    }
+    .test-result.pass { background: #1a4d1a; border: 2px solid #00ff00; }
+    .test-result.fail { background: #4d1a1a; border: 2px solid #ff0000; }
+    .test-result.pending { background: #4d4d1a; border: 2px solid #ffff00; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>MCP Layer Mode Test - River Raid</h1>
+    
+    <div class="status-bar">
+      <div class="status-item">
+        <label>Durum</label>
+        <value id="status">Bekliyor</value>
+      </div>
+      <div class="status-item">
+        <label>Skor</label>
+        <value id="score">0</value>
+      </div>
+      <div class="status-item">
+        <label>Can</label>
+        <value id="lives">3</value>
+      </div>
+      <div class="status-item">
+        <label>Alınan Mesaj</label>
+        <value id="msgCount">0</value>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button onclick="openGame()">Oyunu Aç</button>
+      <button onclick="sendInit()" id="initBtn" disabled>Init Gönder</button>
+      <button onclick="sendControl('play')" id="playBtn" disabled>Play</button>
+      <button onclick="sendControl('pause')" id="pauseBtn" disabled>Pause</button>
+      <button onclick="sendControl('resume')" id="resumeBtn" disabled>Resume</button>
+      <button onclick="sendControl('restart')" id="restartBtn" disabled>Restart</button>
+      <button onclick="closeGame()">Kapat</button>
+      <button onclick="runAutoTest()">Otomatik Test</button>
+    </div>
+
+    <div class="game-container" id="gameContainer">
+      <div style="display:flex;align-items:center;justify-content:center;height:100%;color:#666;">
+        Oyun yüklenmedi. "Oyunu Aç" butonuna tıklayın.
+      </div>
+    </div>
+
+    <div id="testResult"></div>
+
+    <div class="log-container">
+      <h3>
+        MCP Mesaj Logları
+        <button class="clear-btn" onclick="clearLogs()">Temizle</button>
+      </h3>
+      <div id="logs"></div>
+    </div>
+  </div>
+
+  <script>
+    const GAME_URL = window.location.origin;
+    let gameFrame = null;
+    let msgCount = 0;
+    let receivedMessages = [];
+    let testResults = { ready: false, progress: false, complete: false };
+
+    function log(direction, type, data) {
+      const logsDiv = document.getElementById('logs');
+      const time = new Date().toLocaleTimeString('tr-TR');
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${direction}`;
+      entry.innerHTML = `
+        <span class="time">[${time}]</span>
+        <span class="type">${direction === 'sent' ? '📤' : '📩'} ${type}</span>
+        <pre style="margin-top:5px;color:#aaa;">${JSON.stringify(data, null, 2)}</pre>
+      `;
+      logsDiv.insertBefore(entry, logsDiv.firstChild);
+    }
+
+    function clearLogs() {
+      document.getElementById('logs').innerHTML = '';
+      msgCount = 0;
+      document.getElementById('msgCount').textContent = '0';
+      receivedMessages = [];
+    }
+
+    function updateStatus(status) {
+      document.getElementById('status').textContent = status;
+    }
+
+    function enableControls(enable) {
+      ['initBtn', 'playBtn', 'pauseBtn', 'resumeBtn', 'restartBtn'].forEach(id => {
+        document.getElementById(id).disabled = !enable;
+      });
+    }
+
+    window.addEventListener('message', (event) => {
+      const data = event.data;
+      if (!data || !data.type || !data.type.startsWith('mcp:')) return;
+
+      msgCount++;
+      document.getElementById('msgCount').textContent = msgCount;
+      receivedMessages.push(data);
+
+      log('received', data.type, data);
+
+      switch(data.type) {
+        case 'mcp:ready':
+          updateStatus('Hazır');
+          testResults.ready = true;
+          enableControls(true);
+          break;
+        case 'mcp:progress':
+          if (data.data) {
+            if (data.data.score !== undefined) {
+              document.getElementById('score').textContent = data.data.score;
+            }
+            if (data.data.lives !== undefined) {
+              document.getElementById('lives').textContent = data.data.lives;
+            }
+            if (data.data.status) {
+              updateStatus(data.data.status);
+            }
+            testResults.progress = true;
+          }
+          break;
+        case 'mcp:complete':
+          updateStatus('Oyun Bitti');
+          testResults.complete = true;
+          if (data.data) {
+            document.getElementById('score').textContent = data.data.finalScore || data.finalScore || 0;
+          }
+          break;
+        case 'mcp:cancel':
+          updateStatus('İptal');
+          break;
+        case 'mcp:error':
+          updateStatus('Hata: ' + (data.error?.message || 'Bilinmiyor'));
+          break;
+      }
+    });
+
+    function openGame() {
+      const container = document.getElementById('gameContainer');
+      container.innerHTML = '';
+      
+      gameFrame = document.createElement('iframe');
+      gameFrame.src = `${GAME_URL}/?mode=layer&username=TestKullanici&language=tr&theme=dark`;
+      container.appendChild(gameFrame);
+      
+      log('sent', 'iframe opened', { src: gameFrame.src });
+      updateStatus('Yükleniyor...');
+    }
+
+    function sendInit() {
+      if (!gameFrame) return;
+      
+      const initMessage = {
+        type: 'mcp:init',
+        context: {
+          customerId: 'test-customer-123',
+          projectId: 'test-project-456',
+          userId: 'test-user-789',
+          resourceId: 'game-session-' + Date.now(),
+          token: 'test-token-abc',
+          config: { theme: 'dark' },
+          params: { username: 'MCPTestUser' }
+        }
+      };
+      
+      gameFrame.contentWindow.postMessage(initMessage, '*');
+      log('sent', 'mcp:init', initMessage);
+    }
+
+    function sendControl(action) {
+      if (!gameFrame) return;
+      
+      const controlMessage = {
+        type: 'mcp:control',
+        payload: { action: action }
+      };
+      
+      gameFrame.contentWindow.postMessage(controlMessage, '*');
+      log('sent', 'mcp:control', controlMessage);
+    }
+
+    function closeGame() {
+      if (gameFrame) {
+        const closeMessage = { type: 'mcp:close', payload: { reason: 'user_closed' } };
+        gameFrame.contentWindow.postMessage(closeMessage, '*');
+        log('sent', 'mcp:close', closeMessage);
+      }
+      
+      const container = document.getElementById('gameContainer');
+      container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#666;">Oyun kapatıldı.</div>';
+      gameFrame = null;
+      enableControls(false);
+      updateStatus('Kapalı');
+    }
+
+    async function runAutoTest() {
+      const resultDiv = document.getElementById('testResult');
+      resultDiv.innerHTML = '<div class="test-result pending">Test başlatılıyor...</div>';
+      
+      clearLogs();
+      testResults = { ready: false, progress: false, complete: false };
+      
+      // 1. Oyunu aç
+      openGame();
+      resultDiv.innerHTML = '<div class="test-result pending">1/4 - Oyun açılıyor...</div>';
+      
+      // 2. mcp:ready bekle (3 saniye)
+      await new Promise(r => setTimeout(r, 3000));
+      
+      if (!testResults.ready) {
+        resultDiv.innerHTML = '<div class="test-result fail">BAŞARISIZ: mcp:ready mesajı alınamadı</div>';
+        return;
+      }
+      resultDiv.innerHTML = '<div class="test-result pending">2/4 - mcp:ready alındı, init gönderiliyor...</div>';
+      
+      // 3. Init gönder
+      sendInit();
+      await new Promise(r => setTimeout(r, 500));
+      
+      // 4. Play gönder
+      sendControl('play');
+      resultDiv.innerHTML = '<div class="test-result pending">3/4 - Oyun başlatıldı, progress bekleniyor...</div>';
+      
+      // 5. Progress bekle (2 saniye)
+      await new Promise(r => setTimeout(r, 2000));
+      
+      // Sonuçları değerlendir
+      const allTests = [];
+      
+      // mcp:ready kontrolü
+      const readyMsg = receivedMessages.find(m => m.type === 'mcp:ready');
+      allTests.push({
+        name: 'mcp:ready formatı',
+        pass: readyMsg && readyMsg.appId && readyMsg.capabilities,
+        expected: '{ type, appId, version, capabilities }',
+        actual: readyMsg ? JSON.stringify(readyMsg) : 'Alınmadı'
+      });
+      
+      // mcp:progress kontrolü
+      const progressMsg = receivedMessages.find(m => m.type === 'mcp:progress' && m.data);
+      allTests.push({
+        name: 'mcp:progress formatı',
+        pass: progressMsg && progressMsg.data && progressMsg.appId,
+        expected: '{ type, appId, data: {...} }',
+        actual: progressMsg ? JSON.stringify(progressMsg) : 'Alınmadı'
+      });
+      
+      // Mesaj sayısı kontrolü
+      allTests.push({
+        name: 'Mesaj alımı',
+        pass: receivedMessages.length >= 2,
+        expected: 'En az 2 mesaj',
+        actual: `${receivedMessages.length} mesaj alındı`
+      });
+      
+      // Sonuç göster
+      const allPassed = allTests.every(t => t.pass);
+      let html = `<div class="test-result ${allPassed ? 'pass' : 'fail'}">
+        <h3>${allPassed ? '✅ TÜM TESTLER BAŞARILI' : '❌ BAZI TESTLER BAŞARISIZ'}</h3>
+        <table style="width:100%;margin-top:10px;font-size:12px;">
+          <tr><th>Test</th><th>Sonuç</th><th>Beklenen</th><th>Alınan</th></tr>
+      `;
+      
+      allTests.forEach(t => {
+        html += `<tr style="background:${t.pass ? 'rgba(0,255,0,0.1)' : 'rgba(255,0,0,0.1)'}">
+          <td>${t.name}</td>
+          <td>${t.pass ? '✅' : '❌'}</td>
+          <td style="font-size:10px;">${t.expected}</td>
+          <td style="font-size:10px;max-width:300px;overflow:hidden;text-overflow:ellipsis;">${t.actual.substring(0, 100)}...</td>
+        </tr>`;
+      });
+      
+      html += '</table></div>';
+      resultDiv.innerHTML = html;
+    }
+  </script>
+</body>
+</html>
