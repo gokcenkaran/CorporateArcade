@@ -20,8 +20,8 @@ const PROJECT_ID = "f52ccba8-03ea-4a9c-9d7c-e02bd6436c30";
 const MCP_API_SECRET = "k5TuCjTsADoGYnIVXbtIYTArcrympXGP";
 const USER_ID = "test-user-001";
 
-// Test için local server port
-const LOCAL_SERVER_PORT = 3333;
+// Test için arcade URL
+const ARCADE_URL = "https://testarcade.replit.app";
 // =======================================
 
 function base64UrlEncode(str) {
