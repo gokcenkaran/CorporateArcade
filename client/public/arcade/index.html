@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Corporate Arcade - aiNoodle MCP Game</title>
+  <link rel="stylesheet" href="styles.css">
+
+  <!-- Favicon -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎮</text></svg>">
+
+  <!-- MCP App Metadata -->
+  <meta name="mcp-app-id" content="corporate-arcade">
+  <meta name="mcp-app-version" content="1.0.0">
+  <meta name="mcp-response-type" content="layer">
+</head>
+<body>
+  <div class="app-container" id="app">
+    <!-- Loading State (SDK init beklenirken) -->
+    <div class="loading-container" id="loadingState">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Oyun yükleniyor...</div>
+    </div>
+
+    <!-- Game UI (oyun hazır olduğunda) -->
+    <div id="gameUI" style="display: none; width: 100%; height: 100%;">
+      <header class="game-header">
+        <div class="game-title">🎮 CORPORATE ARCADE</div>
+        <span class="protocol-badge" id="protocolBadge">STANDALONE</span>
+        <button class="close-button" id="closeButton">✕ Kapat</button>
+      </header>
+
+      <div class="game-container">
+        <canvas id="gameCanvas"></canvas>
+      </div>
+
+      <footer class="game-footer">
+        <kbd>←</kbd> <kbd>→</kbd> veya <kbd>Mouse</kbd> ile hareket •
+        <kbd>Space</kbd> ile başlat •
+        <kbd>P</kbd> duraklat •
+        <kbd>ESC</kbd> kapat
+      </footer>
+    </div>
+
+    <!-- Error State -->
+    <div class="error-container" id="errorState" style="display: none;">
+      <div class="error-icon">⚠️</div>
+      <div class="error-title">Bir hata oluştu</div>
+      <div class="error-message" id="errorMessage">Oyun yüklenirken bir sorun oluştu.</div>
+      <button class="retry-button" onclick="location.reload()">Tekrar Dene</button>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="mcp-sdk.js"></script>
+  <script src="game.js"></script>
+  <script>
+    /**
+     * Corporate Arcade - Main Application
+     *
+     * MCPCallee SDK ile entegre arcade oyunu.
+     * Caller webapp tarafından çağrıldığında layer modunda çalışır.
+     */
+
+    (function() {
+      'use strict';
+
+      // DOM Elements
+      const loadingState = document.getElementById('loadingState');
+      const gameUI = document.getElementById('gameUI');
+      const errorState = document.getElementById('errorState');
+      const errorMessage = document.getElementById('errorMessage');
+      const protocolBadge = document.getElementById('protocolBadge');
+      const closeButton = document.getElementById('closeButton');
+
+      // Global instances
+      let mcp = null;
+      let game = null;
+
+      /**
+       * Uygulamayı başlat
+       */
+      function init() {
+        try {
+          // MCP SDK'yı başlat
+          mcp = new MCPCallee({
+            appId: 'corporate-arcade',
+            version: '1.0.0'
+          });
+
+          // Protokolü göster
+          updateProtocolBadge(mcp.getProtocol());
+
+          // Body'ye protokol class'ı ekle
+          document.body.classList.add(mcp.getProtocol() + '-mode');
+
+          // Init event'ini dinle
+          mcp.onInit(handleInit);
+
+          // Control event'lerini dinle
+          mcp.onControl(handleControl);
+
+          // Kapat butonunu ayarla
+          closeButton.addEventListener('click', handleClose);
+
+          // Standalone modda direkt başlat
+          if (mcp.getProtocol() === 'standalone') {
+            // Kısa bir gecikme ile "yükleme" efekti
+            setTimeout(() => {
+              startGame(null);
+            }, 500);
+          }
+
+          // Iframe veya layer modunda init bekle
+          // (SDK otomatik olarak ready mesajı gönderecek)
+
+        } catch (error) {
+          console.error('[App] Initialization error:', error);
+          showError('SDK başlatılamadı: ' + error.message);
+        }
+      }
+
+      /**
+       * MCP Init handler
+       */
+      function handleInit(context) {
+        console.log('[App] MCP Init received:', context);
+        startGame(context);
+      }
+
+      /**
+       * MCP Control handler
+       */
+      function handleControl(action, payload) {
+        console.log('[App] MCP Control:', action, payload);
+
+        switch (action) {
+          case 'pause':
+            if (game) game.pause();
+            break;
+          case 'resume':
+            if (game) game.resume();
+            break;
+          case 'restart':
+            if (game) game.restart();
+            break;
+          case 'close':
+            handleClose();
+            break;
+        }
+      }
+
+      /**
+       * Oyunu başlat
+       */
+      function startGame(context) {
+        try {
+          // Loading'i gizle, oyunu göster
+          loadingState.style.display = 'none';
+          gameUI.style.display = 'flex';
+          gameUI.style.flexDirection = 'column';
+
+          // Oyunu oluştur
+          game = new CorporateBreakout('gameCanvas', mcp);
+
+          // Context varsa loglama
+          if (context) {
+            console.log('[App] Started with context:', {
+              resourceId: context.resourceId,
+              userId: context.userId,
+              customerId: context.customerId
+            });
+          }
+
+          // İlk render
+          game._render();
+
+        } catch (error) {
+          console.error('[App] Game start error:', error);
+          showError('Oyun başlatılamadı: ' + error.message);
+        }
+      }
+
+      /**
+       * Kapat handler
+       */
+      function handleClose() {
+        if (game && game.gameState === 'playing') {
+          // Oyun devam ediyorsa, son durumu kaydet
+          const progress = {
+            score: game.score,
+            level: game.level,
+            lives: game.lives,
+            timeElapsed: game.startTime ? Math.floor((Date.now() - game.startTime) / 1000) : 0
+          };
+
+          mcp.cancelWithData(progress);
+        } else {
+          // Oyun bitmiş veya başlamamış
+          mcp.cancel('user_closed');
+        }
+      }
+
+      /**
+       * Protokol badge'ini güncelle
+       */
+      function updateProtocolBadge(protocol) {
+        const badges = {
+          'standard': '📦 IFRAME',
+          'ainoodle': '🚀 LAYER',
+          'standalone': '🔧 STANDALONE'
+        };
+
+        protocolBadge.textContent = badges[protocol] || protocol.toUpperCase();
+      }
+
+      /**
+       * Hata göster
+       */
+      function showError(message) {
+        loadingState.style.display = 'none';
+        gameUI.style.display = 'none';
+        errorState.style.display = 'flex';
+        errorMessage.textContent = message;
+      }
+
+      // Sayfa yüklendiğinde başlat
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+      } else {
+        init();
+      }
+
+    })();
+  </script>
+</body>
+</html>
