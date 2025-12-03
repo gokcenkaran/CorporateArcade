@@ -15,11 +15,14 @@ function App() {
     fuel,
     highScore,
     difficulty,
+    playTime,
+    enemiesDestroyed,
     startGame,
     restartGame,
     pauseGame,
     resumeGame,
     setHighScore,
+    stopTimer,
   } = useRiverRaid();
   
   const prevPhaseRef = useRef<string>(phase);
@@ -93,11 +96,16 @@ function App() {
       console.log("MCP Close:", reason);
       // Send final state when closing
       const state = useRiverRaid.getState();
+      const finalPlayTime = state.gameStartTime 
+        ? Math.round((Date.now() - state.gameStartTime) / 1000)
+        : state.playTime;
       mcpRef.current?.cancelWithData(reason, {
         finalScore: state.score,
-        lives: state.lives,
-        fuel: state.fuel,
-        phase: state.phase,
+        highScore: state.highScore,
+        difficulty: state.difficulty,
+        playTime: finalPlayTime,
+        completed: false,
+        enemiesDestroyed: state.enemiesDestroyed,
       });
     });
 
@@ -157,13 +165,19 @@ function App() {
           status: "paused",
         });
       } else if (phase === "gameover" && prevPhaseRef.current !== "gameover") {
-        // Game over - send completion with high score
+        // Game over - send completion with all data
         const state = useRiverRaid.getState();
+        stopTimer();
+        const finalPlayTime = state.gameStartTime 
+          ? Math.round((Date.now() - state.gameStartTime) / 1000)
+          : state.playTime;
         mcpRef.current.completeGame({
           finalScore: score,
           highScore: state.highScore,
           difficulty: state.difficulty,
+          playTime: finalPlayTime,
           completed: true,
+          enemiesDestroyed: state.enemiesDestroyed,
         });
       }
     }

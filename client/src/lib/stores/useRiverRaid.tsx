@@ -54,6 +54,9 @@ interface RiverRaidState {
   difficulty: number;
   activePowerUps: { type: PowerUpType; endTime: number }[];
   soundEnabled: boolean;
+  playTime: number;
+  gameStartTime: number | null;
+  enemiesDestroyed: number;
   
   // Actions
   setUsername: (name: string) => void;
@@ -62,6 +65,9 @@ interface RiverRaidState {
   resumeGame: () => void;
   restartGame: () => void;
   gameOver: () => void;
+  startTimer: () => void;
+  stopTimer: () => void;
+  incrementEnemiesDestroyed: () => void;
   movePlayer: (direction: "left" | "right") => void;
   shoot: () => void;
   addScore: (points: number) => void;
@@ -110,6 +116,9 @@ export const useRiverRaid = create<RiverRaidState>()(
     difficulty: 1,
     activePowerUps: [],
     soundEnabled: true,
+    playTime: 0,
+    gameStartTime: null,
+    enemiesDestroyed: 0,
     
     setUsername: (name: string) => set({ username: name }),
     
@@ -131,6 +140,9 @@ export const useRiverRaid = create<RiverRaidState>()(
         riverOffset: 0,
         difficulty: 1,
         activePowerUps: [],
+        playTime: 0,
+        gameStartTime: Date.now(),
+        enemiesDestroyed: 0,
       });
     },
     
@@ -156,6 +168,9 @@ export const useRiverRaid = create<RiverRaidState>()(
         riverOffset: 0,
         difficulty: 1,
         activePowerUps: [],
+        playTime: 0,
+        gameStartTime: null,
+        enemiesDestroyed: 0,
       });
     },
     
@@ -297,6 +312,7 @@ export const useRiverRaid = create<RiverRaidState>()(
     removeEnemy: (id: string) => {
       set((state) => ({
         enemies: state.enemies.filter((e) => e.id !== id),
+        enemiesDestroyed: state.enemiesDestroyed + 1,
       }));
     },
     
@@ -384,6 +400,22 @@ export const useRiverRaid = create<RiverRaidState>()(
     },
     
     setHighScore: (score: number) => set({ highScore: score }),
+    
+    startTimer: () => {
+      set({ gameStartTime: Date.now() });
+    },
+    
+    stopTimer: () => {
+      const { gameStartTime } = get();
+      if (gameStartTime) {
+        const elapsed = Math.round((Date.now() - gameStartTime) / 1000);
+        set({ playTime: elapsed, gameStartTime: null });
+      }
+    },
+    
+    incrementEnemiesDestroyed: () => {
+      set((state) => ({ enemiesDestroyed: state.enemiesDestroyed + 1 }));
+    },
   }))
 );
 
