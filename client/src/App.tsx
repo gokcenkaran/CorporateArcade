@@ -7,7 +7,6 @@ import "@fontsource/inter";
 
 function App() {
   const mcpRef = useRef<MCPCallee | null>(null);
-  const lastProgressSendRef = useRef<number>(0);
   const { 
     setUsername, 
     phase, 
@@ -27,7 +26,6 @@ function App() {
   } = useRiverRaid();
   
   const prevPhaseRef = useRef<string>(phase);
-  const prevLivesRef = useRef<number>(lives);
 
   // Handle control commands from parent
   const handleControl = useCallback((action: string, params: any) => {
@@ -115,68 +113,17 @@ function App() {
     };
   }, [setUsername, handleControl]);
 
-  // Send progress updates when score, lives, or fuel changes during gameplay
-  // Throttled to 500ms to prevent message flood
-  useEffect(() => {
-    if (mcpRef.current && phase === "playing") {
-      const now = Date.now();
-      if (now - lastProgressSendRef.current >= 500) {
-        mcpRef.current.sendGameProgress({
-          score,
-          lives,
-          status: "playing",
-        });
-        
-        mcpRef.current.sendProgress({
-          current: score,
-          total: score + 1000,
-          message: `Score: ${score} | Lives: ${lives} | Fuel: ${Math.round(fuel)}%`,
-        });
-        
-        lastProgressSendRef.current = now;
-      }
-    }
-  }, [phase, score, lives, fuel]);
 
-  // Detect life loss and notify parent
+  // Detect game over and send completion to parent
   useEffect(() => {
-    if (phase === "playing" && lives < prevLivesRef.current) {
-      console.log(`Life lost! Remaining lives: ${lives}`);
+    if (phase === "gameover" && prevPhaseRef.current !== "gameover") {
+      // Game over - send completion with all data
+      const state = useRiverRaid.getState();
+      stopTimer();
+      const finalPlayTime = state.gameStartTime 
+        ? Math.round((Date.now() - state.gameStartTime) / 1000)
+        : state.playTime;
       if (mcpRef.current) {
-        mcpRef.current.sendProgress({
-          current: lives,
-          total: 3,
-          message: `Life lost! Remaining: ${lives}`,
-        });
-      }
-    }
-    prevLivesRef.current = lives;
-  }, [lives, phase]);
-
-  // Detect phase changes and notify parent
-  useEffect(() => {
-    if (mcpRef.current) {
-      if (phase === "playing" && prevPhaseRef.current !== "playing") {
-        // Game started
-        mcpRef.current.sendGameProgress({
-          score: 0,
-          lives: 3,
-          status: "playing",
-        });
-      } else if (phase === "paused" && prevPhaseRef.current === "playing") {
-        // Game paused
-        mcpRef.current.sendGameProgress({
-          score,
-          lives,
-          status: "paused",
-        });
-      } else if (phase === "gameover" && prevPhaseRef.current !== "gameover") {
-        // Game over - send completion with all data
-        const state = useRiverRaid.getState();
-        stopTimer();
-        const finalPlayTime = state.gameStartTime 
-          ? Math.round((Date.now() - state.gameStartTime) / 1000)
-          : state.playTime;
         mcpRef.current.completeGame({
           finalScore: score,
           highScore: state.highScore,
@@ -188,18 +135,7 @@ function App() {
       }
     }
     prevPhaseRef.current = phase;
-  }, [phase, score, lives]);
-
-  // Send high score updates to parent app
-  useEffect(() => {
-    if (mcpRef.current && highScore > 0) {
-      mcpRef.current.sendProgress({
-        current: highScore,
-        total: highScore,
-        message: `High Score: ${highScore}`,
-      });
-    }
-  }, [highScore]);
+  }, [phase, score]);
 
   return (
     <div className="game-container">
