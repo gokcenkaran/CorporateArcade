@@ -7,6 +7,7 @@ import "@fontsource/inter";
 
 function App() {
   const mcpRef = useRef<MCPCallee | null>(null);
+  const lastProgressSendRef = useRef<number>(0);
   const { 
     setUsername, 
     phase, 
@@ -115,20 +116,25 @@ function App() {
   }, [setUsername, handleControl]);
 
   // Send progress updates when score, lives, or fuel changes during gameplay
+  // Throttled to 500ms to prevent message flood
   useEffect(() => {
     if (mcpRef.current && phase === "playing") {
-      mcpRef.current.sendGameProgress({
-        score,
-        lives,
-        status: "playing",
-      });
-      
-      // Also send generic progress
-      mcpRef.current.sendProgress({
-        current: score,
-        total: score + 1000, // Approximate progress
-        message: `Score: ${score} | Lives: ${lives} | Fuel: ${Math.round(fuel)}%`,
-      });
+      const now = Date.now();
+      if (now - lastProgressSendRef.current >= 500) {
+        mcpRef.current.sendGameProgress({
+          score,
+          lives,
+          status: "playing",
+        });
+        
+        mcpRef.current.sendProgress({
+          current: score,
+          total: score + 1000,
+          message: `Score: ${score} | Lives: ${lives} | Fuel: ${Math.round(fuel)}%`,
+        });
+        
+        lastProgressSendRef.current = now;
+      }
     }
   }, [phase, score, lives, fuel]);
 
